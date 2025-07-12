@@ -727,7 +727,7 @@
                                 <h5 class="mb-0"><i class="fas fa-history me-2"></i>Recent History</h5>
                             </div>
                             <div class="dashboard-card-body">
-                                <div id="historyList">
+                                <div id="historyItems">
                                     <!-- History items will be inserted here -->
                                 </div>
                                 <div class="text-center mt-3">
@@ -1272,12 +1272,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
     
     <script>
-        // Global variables
+        // Initialize SQLite database
         let db;
         let currentUser = null;
+        
+        // Global chart references
         let comparisonChart, trendChart, breakdownChart, improvementChart, leaderboardComparisonChart;
         
-        // Initialize SQLite database
+        // Initialize the database
         async function initDatabase() {
             try {
                 // Load SQL.js
@@ -1296,7 +1298,7 @@
                         name TEXT NOT NULL,
                         email TEXT NOT NULL UNIQUE,
                         password TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     );
                 `);
                 
@@ -1304,7 +1306,7 @@
                     CREATE TABLE IF NOT EXISTS footprints (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
-                        date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        date DATETIME DEFAULT CURRENT_TIMESTAMP,
                         transport REAL NOT NULL,
                         energy REAL NOT NULL,
                         food REAL NOT NULL,
@@ -1314,21 +1316,18 @@
                     );
                 `);
                 
-                // Create indexes for better performance
-                db.run('CREATE INDEX IF NOT EXISTS idx_footprints_user_id ON footprints(user_id);');
-                db.run('CREATE INDEX IF NOT EXISTS idx_footprints_date ON footprints(date);');
-                
-                console.log('Database initialized successfully');
-                
-                // Check for logged in user from session
-                const userId = sessionStorage.getItem('currentUserId');
-                if (userId) {
-                    const user = getUserById(parseInt(userId));
+                // Check for existing session
+                const session = localStorage.getItem('carbonEveSession');
+                if (session) {
+                    const sessionData = JSON.parse(session);
+                    const user = getUserById(sessionData.userId);
                     if (user) {
                         currentUser = user;
                         updateUIForLoggedInUser(currentUser);
                     }
                 }
+                
+                console.log('Database initialized successfully');
             } catch (error) {
                 console.error('Error initializing database:', error);
                 showToast('Error initializing database. Please refresh the page.', 'danger');
@@ -1346,181 +1345,212 @@
                 return getUserByEmail(email);
             } catch (error) {
                 console.error('Error adding user:', error);
-                if (error.message.includes('UNIQUE constraint failed')) {
-                    throw new Error('User with this email already exists');
-                }
-                throw error;
+                return null;
             }
         }
         
         function getUserByEmail(email) {
-            const stmt = db.prepare('SELECT * FROM users WHERE email = ?');
-            stmt.bind([email]);
-            const result = stmt.step() ? stmt.getAsObject() : null;
-            stmt.free();
-            return result;
+            try {
+                const stmt = db.prepare('SELECT * FROM users WHERE email = ?');
+                stmt.bind([email]);
+                if (stmt.step()) {
+                    return stmt.getAsObject();
+                }
+                return null;
+            } catch (error) {
+                console.error('Error getting user by email:', error);
+                return null;
+            } finally {
+                stmt?.free();
+            }
         }
         
         function getUserById(id) {
-            const stmt = db.prepare('SELECT * FROM users WHERE id = ?');
-            stmt.bind([id]);
-            const result = stmt.step() ? stmt.getAsObject() : null;
-            stmt.free();
-            return result;
+            try {
+                const stmt = db.prepare('SELECT * FROM users WHERE id = ?');
+                stmt.bind([id]);
+                if (stmt.step()) {
+                    return stmt.getAsObject();
+                }
+                return null;
+            } catch (error) {
+                console.error('Error getting user by id:', error);
+                return null;
+            } finally {
+                stmt?.free();
+            }
         }
         
         function saveFootprint(userId, transport, energy, food, shopping, total) {
-            const stmt = db.prepare(`
-                INSERT INTO footprints (user_id, transport, energy, food, shopping, total)
-                VALUES (?, ?, ?, ?, ?, ?)
-            `);
-            stmt.bind([userId, transport, energy, food, shopping, total]);
-            stmt.step();
-            stmt.free();
-        }
-        
-        function getFootprintsByUser(userId, limit = 5) {
-            const stmt = db.prepare(`
-                SELECT * FROM footprints 
-                WHERE user_id = ? 
-                ORDER BY date DESC 
-                LIMIT ?
-            `);
-            stmt.bind([userId, limit]);
-            
-            const footprints = [];
-            while (stmt.step()) {
-                footprints.push(stmt.getAsObject());
+            try {
+                const stmt = db.prepare(`
+                    INSERT INTO footprints (user_id, transport, energy, food, shopping, total)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `);
+                stmt.bind([userId, transport, energy, food, shopping, total]);
+                stmt.step();
+                stmt.free();
+                return true;
+            } catch (error) {
+                console.error('Error saving footprint:', error);
+                return false;
             }
-            stmt.free();
-            
-            return footprints;
         }
         
-        function getFootprintsByPeriod(userId, period) {
-            let query;
-            const now = new Date();
-            
-            switch(period) {
-                case 'daily':
-                    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-                    query = `
-                        SELECT strftime('%Y-%m-%d', date) as day, 
-                               AVG(total) as avg_total,
-                               AVG(transport) as avg_transport,
-                               AVG(energy) as avg_energy,
-                               AVG(food) as avg_food,
-                               AVG(shopping) as avg_shopping
-                        FROM footprints
-                        WHERE user_id = ? AND date >= ?
-                        GROUP BY day
-                        ORDER BY day
-                    `;
-                    return executeQuery(query, [userId, startOfDay]);
-                    
-                case 'weekly':
-                    const startOfWeek = new Date(now.setDate(now.getDate() - 7)).toISOString();
-                    query = `
-                        SELECT strftime('%Y-%W', date) as week, 
-                               AVG(total) as avg_total,
-                               AVG(transport) as avg_transport,
-                               AVG(energy) as avg_energy,
-                               AVG(food) as avg_food,
-                               AVG(shopping) as avg_shopping
-                        FROM footprints
-                        WHERE user_id = ? AND date >= ?
-                        GROUP BY week
-                        ORDER BY week
-                    `;
-                    return executeQuery(query, [userId, startOfWeek]);
-                    
-                case 'monthly':
-                    const startOfMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
-                    query = `
-                        SELECT strftime('%Y-%m', date) as month, 
-                               AVG(total) as avg_total,
-                               AVG(transport) as avg_transport,
-                               AVG(energy) as avg_energy,
-                               AVG(food) as avg_food,
-                               AVG(shopping) as avg_shopping
-                        FROM footprints
-                        WHERE user_id = ? AND date >= ?
-                        GROUP BY month
-                        ORDER BY month
-                    `;
-                    return executeQuery(query, [userId, startOfMonth]);
-                    
-                case 'yearly':
-                    const startOfYear = new Date(now.getFullYear() - 1, 0, 1).toISOString();
-                    query = `
-                        SELECT strftime('%Y', date) as year, 
-                               AVG(total) as avg_total,
-                               AVG(transport) as avg_transport,
-                               AVG(energy) as avg_energy,
-                               AVG(food) as avg_food,
-                               AVG(shopping) as avg_shopping
-                        FROM footprints
-                        WHERE user_id = ? AND date >= ?
-                        GROUP BY year
-                        ORDER BY year
-                    `;
-                    return executeQuery(query, [userId, startOfYear]);
-                    
-                default:
-                    return [];
+        function getFootprintsByUser(userId, limit = 10) {
+            try {
+                const stmt = db.prepare(`
+                    SELECT * FROM footprints 
+                    WHERE user_id = ? 
+                    ORDER BY date DESC
+                    LIMIT ?
+                `);
+                stmt.bind([userId, limit]);
+                
+                const footprints = [];
+                while (stmt.step()) {
+                    footprints.push(stmt.getAsObject());
+                }
+                
+                return footprints;
+            } catch (error) {
+                console.error('Error getting footprints by user:', error);
+                return [];
+            } finally {
+                stmt?.free();
             }
         }
         
         function getLatestFootprints(limit = 10) {
-            // Get the latest footprint for each user
-            const query = `
-                WITH latest_footprints AS (
-                    SELECT f.*, u.name as user_name,
-                           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY date DESC) as rn
-                    FROM footprints f
-                    JOIN users u ON f.user_id = u.id
-                )
-                SELECT * FROM latest_footprints
-                WHERE rn = 1
-                ORDER BY total ASC
-                LIMIT ?
-            `;
-            
-            return executeQuery(query, [limit]);
-        }
-        
-        function getUserRank(userId) {
-            // Get user's rank based on their latest footprint
-            const query = `
-                WITH ranked_users AS (
-                    SELECT f.user_id, u.name, f.total,
-                           RANK() OVER (ORDER BY f.total ASC) as rank,
-                           COUNT(*) OVER () as total_users
+            try {
+                // First get the latest footprint for each user
+                const stmt = db.prepare(`
+                    SELECT f.*, u.name as user_name
                     FROM footprints f
                     JOIN users u ON f.user_id = u.id
                     WHERE f.date = (
-                        SELECT MAX(date) FROM footprints WHERE user_id = f.user_id
+                        SELECT MAX(date) 
+                        FROM footprints 
+                        WHERE user_id = f.user_id
                     )
-                )
-                SELECT * FROM ranked_users
-                WHERE user_id = ?
-            `;
-            
-            const result = executeQuery(query, [userId]);
-            return result.length > 0 ? result[0] : null;
+                    ORDER BY f.total ASC
+                    LIMIT ?
+                `);
+                stmt.bind([limit]);
+                
+                const footprints = [];
+                while (stmt.step()) {
+                    footprints.push(stmt.getAsObject());
+                }
+                
+                return footprints;
+            } catch (error) {
+                console.error('Error getting latest footprints:', error);
+                return [];
+            } finally {
+                stmt?.free();
+            }
         }
         
-        function executeQuery(query, params = []) {
-            const stmt = db.prepare(query);
-            stmt.bind(params);
-            
-            const results = [];
-            while (stmt.step()) {
-                results.push(stmt.getAsObject());
+        function getUserPosition(userId) {
+            try {
+                // Get all users with their latest footprint
+                const stmt = db.prepare(`
+                    SELECT f.user_id, u.name, f.total
+                    FROM footprints f
+                    JOIN users u ON f.user_id = u.id
+                    WHERE f.date = (
+                        SELECT MAX(date) 
+                        FROM footprints 
+                        WHERE user_id = f.user_id
+                    )
+                    ORDER BY f.total ASC
+                `);
+                
+                const users = [];
+                while (stmt.step()) {
+                    users.push(stmt.getAsObject());
+                }
+                
+                // Find the user's position
+                const userIndex = users.findIndex(u => u.user_id === userId);
+                if (userIndex === -1) return null;
+                
+                return {
+                    rank: userIndex + 1,
+                    totalUsers: users.length,
+                    userData: users[userIndex]
+                };
+            } catch (error) {
+                console.error('Error getting user position:', error);
+                return null;
+            } finally {
+                stmt?.free();
             }
-            stmt.free();
-            
-            return results;
+        }
+        
+        function getFootprintTrend(userId, period = 'weekly') {
+            try {
+                let dateFormat, groupBy, limit;
+                const now = new Date();
+                
+                switch(period) {
+                    case 'daily':
+                        dateFormat = '%Y-%m-%d';
+                        groupBy = 'date';
+                        limit = 7; // Last 7 days
+                        break;
+                    case 'weekly':
+                        dateFormat = '%Y-%W';
+                        groupBy = 'strftime("%Y-%W", date)';
+                        limit = 6; // Last 6 weeks
+                        break;
+                    case 'monthly':
+                        dateFormat = '%Y-%m';
+                        groupBy = 'strftime("%Y-%m", date)';
+                        limit = 6; // Last 6 months
+                        break;
+                    case 'yearly':
+                        dateFormat = '%Y';
+                        groupBy = 'strftime("%Y", date)';
+                        limit = 5; // Last 5 years
+                        break;
+                    default:
+                        dateFormat = '%Y-%W';
+                        groupBy = 'strftime("%Y-%W", date)';
+                        limit = 6;
+                }
+                
+                const stmt = db.prepare(`
+                    SELECT 
+                        strftime(?, date) as period,
+                        AVG(total) as average_total,
+                        AVG(transport) as average_transport,
+                        AVG(energy) as average_energy,
+                        AVG(food) as average_food,
+                        AVG(shopping) as average_shopping
+                    FROM footprints
+                    WHERE user_id = ?
+                    GROUP BY ${groupBy}
+                    ORDER BY date DESC
+                    LIMIT ?
+                `);
+                
+                stmt.bind([dateFormat, userId, limit]);
+                
+                const data = [];
+                while (stmt.step()) {
+                    data.push(stmt.getAsObject());
+                }
+                
+                // Reverse to show chronological order
+                return data.reverse();
+            } catch (error) {
+                console.error('Error getting footprint trend:', error);
+                return [];
+            } finally {
+                stmt?.free();
+            }
         }
         
         // Function to initialize all charts
@@ -1700,143 +1730,108 @@
             });
         }
         
-        // Function to update dashboard charts based on selected period
+        // Function to update dashboard charts
         async function updateDashboardCharts(period) {
             if (!currentUser) return;
             
-            try {
-                const data = getFootprintsByPeriod(currentUser.id, period);
-                
-                if (data.length === 0) {
-                    showToast('No data available for the selected period', 'info');
-                    return;
-                }
-                
-                // Extract labels and values based on period
-                let labels, values, targets;
-                
-                switch(period) {
-                    case 'daily':
-                        labels = data.map(item => {
-                            const date = new Date(item.day);
-                            return date.toLocaleDateString('en-US', { weekday: 'short' });
-                        });
-                        values = data.map(item => item.avg_total);
-                        targets = values.map(val => val * 0.9); // 10% reduction target
-                        break;
-                        
-                    case 'weekly':
-                        labels = data.map(item => 'Week ' + item.week.split('-')[1]);
-                        values = data.map(item => item.avg_total);
-                        targets = values.map((val, i) => {
-                            const base = i > 0 ? targets[i-1] : val;
-                            return base * 0.95; // 5% weekly reduction target
-                        });
-                        break;
-                        
-                    case 'monthly':
-                        labels = data.map(item => {
-                            const date = new Date(item.month + '-01');
-                            return date.toLocaleDateString('en-US', { month: 'short' });
-                        });
-                        values = data.map(item => item.avg_total);
-                        targets = values.map((val, i) => {
-                            const base = i > 0 ? targets[i-1] : val;
-                            return base * 0.9; // 10% monthly reduction target
-                        });
-                        break;
-                        
-                    case 'yearly':
-                        labels = data.map(item => item.year);
-                        values = data.map(item => item.avg_total);
-                        targets = values.map((val, i) => {
-                            const base = i > 0 ? targets[i-1] : val;
-                            return base * 0.8; // 20% yearly reduction target
-                        });
-                        break;
-                }
-                
-                // Update trend chart
-                trendChart.data.labels = labels;
-                trendChart.data.datasets[0].data = values;
+            const trendData = await getFootprintTrend(currentUser.id, period);
+            
+            if (trendData.length === 0) {
+                // No data available
+                trendChart.data.labels = ['No data'];
+                trendChart.data.datasets[0].data = [0];
                 trendChart.update();
                 
-                // Update improvement chart
-                improvementChart.data.labels = labels;
-                improvementChart.data.datasets[0].data = values;
-                improvementChart.data.datasets[1].data = targets;
+                improvementChart.data.labels = ['No data'];
+                improvementChart.data.datasets[0].data = [0];
+                improvementChart.data.datasets[1].data = [0];
                 improvementChart.update();
-                
-                // Update breakdown chart with the latest data
-                const latestData = data[data.length - 1];
-                breakdownChart.data.datasets[0].data = [
-                    latestData.avg_transport,
-                    latestData.avg_energy,
-                    latestData.avg_food,
-                    latestData.avg_shopping
-                ];
-                breakdownChart.update();
-                
-                // Update current footprint display
-                document.getElementById('currentFootprint').textContent = latestData.avg_total.toFixed(1);
-                
-                // Update comparison badge
-                const avgImpact = 42; // Average carbon footprint in kg CO₂e/week
-                if (latestData.avg_total < avgImpact * 0.7) {
-                    document.getElementById('currentComparison').textContent = 'Excellent';
-                    document.getElementById('currentComparison').className = 'badge bg-success';
-                } else if (latestData.avg_total < avgImpact) {
-                    document.getElementById('currentComparison').textContent = 'Good';
-                    document.getElementById('currentComparison').className = 'badge bg-primary';
-                } else if (latestData.avg_total < avgImpact * 1.3) {
-                    document.getElementById('currentComparison').textContent = 'Average';
-                    document.getElementById('currentComparison').className = 'badge bg-warning';
-                } else {
-                    document.getElementById('currentComparison').textContent = 'High';
-                    document.getElementById('currentComparison').className = 'badge bg-danger';
-                }
-                
-                // Update history list
-                updateHistoryList();
-                
-            } catch (error) {
-                console.error('Error updating dashboard charts:', error);
-                showToast('Error loading dashboard data', 'danger');
+                return;
+            }
+            
+            // Update trend chart
+            trendChart.data.labels = trendData.map(item => item.period);
+            trendChart.data.datasets[0].data = trendData.map(item => item.average_total);
+            trendChart.update();
+            
+            // Update improvement chart
+            improvementChart.data.labels = trendData.map(item => item.period);
+            improvementChart.data.datasets[0].data = trendData.map(item => item.average_total);
+            
+            // Calculate target line (10% reduction from first data point)
+            const firstValue = trendData[0].average_total;
+            const targetReduction = firstValue * 0.9; // 10% reduction
+            improvementChart.data.datasets[1].data = trendData.map((_, index) => {
+                const progress = index / (trendData.length - 1);
+                return firstValue - (progress * (firstValue - targetReduction));
+            });
+            improvementChart.update();
+            
+            // Update breakdown chart with latest data
+            const latestData = trendData[trendData.length - 1];
+            breakdownChart.data.datasets[0].data = [
+                latestData.average_transport,
+                latestData.average_energy,
+                latestData.average_food,
+                latestData.average_shopping
+            ];
+            breakdownChart.update();
+            
+            // Update current footprint display
+            document.getElementById('currentFootprint').textContent = latestData.average_total.toFixed(1);
+            
+            // Update comparison badge
+            const avgImpact = 42;
+            if (latestData.average_total < avgImpact * 0.7) {
+                document.getElementById('currentComparison').textContent = 'Excellent';
+                document.getElementById('currentComparison').className = 'badge bg-success';
+            } else if (latestData.average_total < avgImpact) {
+                document.getElementById('currentComparison').textContent = 'Good';
+                document.getElementById('currentComparison').className = 'badge bg-primary';
+            } else if (latestData.average_total < avgImpact * 1.3) {
+                document.getElementById('currentComparison').textContent = 'Average';
+                document.getElementById('currentComparison').className = 'badge bg-warning';
+            } else {
+                document.getElementById('currentComparison').textContent = 'High';
+                document.getElementById('currentComparison').className = 'badge bg-danger';
             }
         }
         
-        // Function to update history list
-        function updateHistoryList() {
+        // Function to update history items
+        function updateHistoryItems() {
             if (!currentUser) return;
             
-            const historyList = document.getElementById('historyList');
-            historyList.innerHTML = '';
+            const historyContainer = document.getElementById('historyItems');
+            historyContainer.innerHTML = '';
             
             const footprints = getFootprintsByUser(currentUser.id, 5);
             
             if (footprints.length === 0) {
-                historyList.innerHTML = '<div class="alert alert-info">No history data available yet</div>';
+                historyContainer.innerHTML = '<div class="alert alert-info">No history data available yet</div>';
                 return;
             }
             
-            footprints.forEach(footprint => {
-                const date = new Date(footprint.date);
+            footprints.forEach(fp => {
+                const date = new Date(fp.date);
+                const dateStr = date.toLocaleDateString();
+                
                 const historyItem = document.createElement('div');
                 historyItem.className = 'history-item';
                 historyItem.innerHTML = `
                     <div class="d-flex justify-content-between">
-                        <span class="history-date">${date.toLocaleDateString()}</span>
-                        <span class="history-value">${footprint.total.toFixed(1)} kg CO₂e</span>
+                        <span class="history-date">${dateStr}</span>
+                        <span class="history-value">${fp.total.toFixed(1)} kg CO₂e</span>
                     </div>
                 `;
-                historyList.appendChild(historyItem);
+                
+                historyContainer.appendChild(historyItem);
             });
         }
         
         // Function to update UI when user logs in
         function updateUIForLoggedInUser(user) {
             currentUser = user;
-            sessionStorage.setItem('currentUserId', user.id);
+            localStorage.setItem('carbonEveSession', JSON.stringify({ userId: user.id }));
             
             document.getElementById('authButtons').classList.add('d-none');
             document.getElementById('userSection').classList.remove('d-none');
@@ -1848,8 +1843,8 @@
             document.getElementById('leaderboardLoginAlert').classList.add('d-none');
             document.getElementById('leaderboardContent').classList.remove('d-none');
             
-            // Update dashboard with daily data by default
-            updateDashboardCharts('daily');
+            // Update dashboard
+            updateDashboard();
             
             // Update leaderboard
             updateLeaderboard();
@@ -1858,7 +1853,7 @@
         // Function to update UI when user logs out
         function updateUIForLoggedOutUser() {
             currentUser = null;
-            sessionStorage.removeItem('currentUserId');
+            localStorage.removeItem('carbonEveSession');
             
             document.getElementById('authButtons').classList.remove('d-none');
             document.getElementById('userSection').classList.add('d-none');
@@ -1870,10 +1865,26 @@
             document.getElementById('leaderboardContent').classList.add('d-none');
         }
         
+        // Function to update dashboard
+        async function updateDashboard() {
+            if (!currentUser) return;
+            
+            // Set default to weekly view
+            document.querySelectorAll('.timeline-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector('.timeline-btn[data-period="weekly"]').classList.add('active');
+            
+            // Update charts with weekly data
+            await updateDashboardCharts('weekly');
+            
+            // Update history items
+            updateHistoryItems();
+        }
+        
         // Function to update leaderboard
         function updateLeaderboard() {
             if (!currentUser) return;
             
+            const leaderboard = getLatestFootprints(10);
             const leaderboardList = document.getElementById('leaderboardList');
             const userPosition = document.getElementById('userPosition');
             
@@ -1881,68 +1892,60 @@
             leaderboardList.innerHTML = '';
             userPosition.innerHTML = '';
             
-            try {
-                const leaderboard = getLatestFootprints(10);
+            if (leaderboard.length === 0) {
+                leaderboardList.innerHTML = '<div class="alert alert-info">No data available yet</div>';
+                userPosition.innerHTML = '<div class="alert alert-info">No data available yet</div>';
+                return;
+            }
+            
+            // Find current user's position
+            const position = getUserPosition(currentUser.id);
+            
+            // Update leaderboard comparison chart
+            const avgFootprint = 42;
+            const topFootprint = leaderboard[0].total;
+            const userFootprint = position?.userData?.total || 0;
+            
+            leaderboardComparisonChart.data.datasets[0].data = [
+                userFootprint,
+                avgFootprint,
+                topFootprint
+            ];
+            leaderboardComparisonChart.update();
+            
+            // Display top users
+            leaderboard.forEach((item, index) => {
+                const leaderboardItem = document.createElement('div');
+                leaderboardItem.className = `leaderboard-item ${item.user_id === currentUser.id ? 'leaderboard-you' : ''}`;
                 
-                if (leaderboard.length === 0) {
-                    leaderboardList.innerHTML = '<div class="alert alert-info">No data available yet</div>';
-                    userPosition.innerHTML = '<div class="alert alert-info">No data available yet</div>';
-                    return;
-                }
+                const rankClass = index < 3 ? `top-${index + 1}` : '';
                 
-                // Find current user's rank
-                const userRank = getUserRank(currentUser.id);
+                leaderboardItem.innerHTML = `
+                    <div class="leaderboard-rank ${rankClass}">${index + 1}</div>
+                    <div class="leaderboard-user">${item.user_name}</div>
+                    <div class="leaderboard-value">${item.total.toFixed(1)} kg</div>
+                `;
                 
-                // Calculate average footprint
-                const avgFootprint = leaderboard.reduce((sum, item) => sum + item.total, 0) / leaderboard.length;
-                const topFootprint = leaderboard[0].total;
-                
-                // Update leaderboard comparison chart
-                leaderboardComparisonChart.data.datasets[0].data = [
-                    userRank ? userRank.total : 0,
-                    avgFootprint,
-                    topFootprint
-                ];
-                leaderboardComparisonChart.update();
-                
-                // Display top users
-                leaderboard.forEach((item, index) => {
-                    const leaderboardItem = document.createElement('div');
-                    leaderboardItem.className = `leaderboard-item ${item.user_id === currentUser.id ? 'leaderboard-you' : ''}`;
-                    
-                    const rankClass = index < 3 ? `top-${index + 1}` : '';
-                    
-                    leaderboardItem.innerHTML = `
-                        <div class="leaderboard-rank ${rankClass}">${index + 1}</div>
-                        <div class="leaderboard-user">${item.user_name}</div>
-                        <div class="leaderboard-value">${item.total.toFixed(1)} kg</div>
-                    `;
-                    
-                    leaderboardList.appendChild(leaderboardItem);
-                });
-                
-                // Display user's position
-                if (userRank) {
-                    userPosition.innerHTML = `
-                        <div class="leaderboard-item leaderboard-you">
-                            <div class="leaderboard-rank ${userRank.rank <= 3 ? `top-${userRank.rank}` : ''}">${userRank.rank}</div>
-                            <div class="leaderboard-user">${currentUser.name}</div>
-                            <div class="leaderboard-value">${userRank.total.toFixed(1)} kg</div>
+                leaderboardList.appendChild(leaderboardItem);
+            });
+            
+            // Display user's position
+            if (position) {
+                userPosition.innerHTML = `
+                    <div class="leaderboard-item leaderboard-you">
+                        <div class="leaderboard-rank ${position.rank <= 3 ? `top-${position.rank}` : ''}">${position.rank}</div>
+                        <div class="leaderboard-user">${currentUser.name}</div>
+                        <div class="leaderboard-value">${position.userData.total.toFixed(1)} kg</div>
+                    </div>
+                    <div class="mt-3">
+                        <p>You are in the top <strong>${Math.round((position.rank / position.totalUsers) * 100)}%</strong> of users!</p>
+                        <div class="progress">
+                            <div class="progress-bar" role="progressbar" style="width: ${100 - ((position.rank / position.totalUsers) * 100)}%"></div>
                         </div>
-                        <div class="mt-3">
-                            <p>You are in the top <strong>${Math.round((userRank.rank / userRank.total_users) * 100)}%</strong> of users!</p>
-                            <div class="progress">
-                                <div class="progress-bar" role="progressbar" style="width: ${100 - ((userRank.rank / userRank.total_users) * 100)}%"></div>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    userPosition.innerHTML = '<div class="alert alert-info">Save your first footprint to appear on the leaderboard!</div>';
-                }
-                
-            } catch (error) {
-                console.error('Error updating leaderboard:', error);
-                showToast('Error loading leaderboard data', 'danger');
+                    </div>
+                `;
+            } else {
+                userPosition.innerHTML = '<div class="alert alert-info">Save your first footprint to appear on the leaderboard!</div>';
             }
         }
         
@@ -2281,7 +2284,7 @@
                 } else {
                     document.getElementById('dashboardLoginAlert').classList.add('d-none');
                     document.getElementById('dashboardContent').classList.remove('d-none');
-                    updateDashboardCharts('daily');
+                    updateDashboard();
                 }
             }
             
@@ -2306,191 +2309,194 @@
         });
         
         // Initialize the application when DOM is loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            // Initialize database and charts
-            initDatabase().then(() => {
-                initializeCharts();
-                
-                // Timeline selector
-                document.querySelectorAll('.timeline-btn').forEach(btn => {
-                    btn.addEventListener('click', function() {
-                        document.querySelectorAll('.timeline-btn').forEach(b => b.classList.remove('active'));
-                        this.classList.add('active');
-                        const period = this.dataset.period;
-                        updateDashboardCharts(period);
-                    });
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Initialize database
+            await initDatabase();
+            
+            // Initialize charts
+            initializeCharts();
+            
+            // Timeline selector
+            document.querySelectorAll('.timeline-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.timeline-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    const period = this.dataset.period;
+                    updateDashboardCharts(period);
                 });
-                
-                // Calculate buttons event listeners
-                document.getElementById('calculateTransport').addEventListener('click', function() {
-                    calculateImpact('transport');
-                });
-                
-                document.getElementById('calculateEnergy').addEventListener('click', function() {
-                    calculateImpact('energy');
-                });
-                
-                document.getElementById('calculateFood').addEventListener('click', function() {
-                    calculateImpact('food');
-                });
-                
-                document.getElementById('calculateShopping').addEventListener('click', function() {
-                    calculateImpact('shopping');
-                });
-                
-                // Save footprint button
-                document.getElementById('saveFootprintBtn').addEventListener('click', function() {
-                    if (!currentUser) {
-                        showToast('Please login to save your footprint', 'danger');
-                        return;
-                    }
-                    
-                    const transportImpact = parseFloat(document.getElementById('transportImpact').textContent) || 0;
-                    const energyImpact = parseFloat(document.getElementById('energyImpact').textContent) || 0;
-                    const foodImpact = parseFloat(document.getElementById('foodImpact').textContent) || 0;
-                    const shoppingImpact = parseFloat(document.getElementById('shoppingImpact').textContent) || 0;
-                    const totalImpact = transportImpact + energyImpact + foodImpact + shoppingImpact;
-                    
-                    try {
-                        saveFootprint(
-                            currentUser.id,
-                            transportImpact,
-                            energyImpact,
-                            foodImpact,
-                            shoppingImpact,
-                            totalImpact
-                        );
-                        
-                        showToast('Carbon footprint saved successfully!', 'success');
-                        
-                        // Update dashboard if visible
-                        if (window.location.hash === '#dashboard') {
-                            updateDashboardCharts('daily');
-                        }
-                        
-                        // Update leaderboard if visible
-                        if (window.location.hash === '#leaderboard') {
-                            updateLeaderboard();
-                        }
-                        
-                    } catch (error) {
-                        console.error('Error saving footprint:', error);
-                        showToast('Error saving footprint', 'danger');
-                    }
-                });
-                
-                // Sign up button
-                document.getElementById('signupButton').addEventListener('click', function() {
-                    const fullName = document.getElementById('fullName').value;
-                    const email = document.getElementById('email').value;
-                    const password = document.getElementById('password').value;
-                    const confirmPassword = document.getElementById('confirmPassword').value;
-                    const termsCheck = document.getElementById('termsCheck').checked;
-                    
-                    if (!fullName || !email || !password || !confirmPassword) {
-                        showToast('Please fill in all fields', 'danger');
-                        return;
-                    }
-                    
-                    if (password !== confirmPassword) {
-                        showToast('Passwords do not match', 'danger');
-                        return;
-                    }
-                    
-                    if (!termsCheck) {
-                        showToast('Please agree to the Terms and Conditions', 'danger');
-                        return;
-                    }
-                    
-                    try {
-                        const newUser = addUser(fullName, email, password);
-                        updateUIForLoggedInUser(newUser);
-                        
-                        showToast('Account created successfully!', 'success');
-                        
-                        // Close modal after delay
-                        setTimeout(() => {
-                            const modal = bootstrap.Modal.getInstance(document.getElementById('signupModal'));
-                            modal.hide();
-                        }, 1500);
-                        
-                    } catch (error) {
-                        console.error('Error signing up:', error);
-                        showToast(error.message || 'Error creating account', 'danger');
-                    }
-                });
-                
-                // Login button
-                document.getElementById('loginButton').addEventListener('click', function() {
-                    const email = document.getElementById('loginEmail').value;
-                    const password = document.getElementById('loginPassword').value;
-                    
-                    if (!email || !password) {
-                        showToast('Please enter both email and password', 'danger');
-                        return;
-                    }
-                    
-                    try {
-                        const user = getUserByEmail(email);
-                        
-                        if (!user || user.password !== password) {
-                            showToast('Invalid email or password', 'danger');
-                            return;
-                        }
-                        
-                        updateUIForLoggedInUser(user);
-                        
-                        showToast('Login successful!', 'success');
-                        
-                        // Close modal after delay
-                        setTimeout(() => {
-                            const modal = bootstrap.Modal.getInstance(document.getElementById('loginModal'));
-                            modal.hide();
-                        }, 1500);
-                        
-                    } catch (error) {
-                        console.error('Error logging in:', error);
-                        showToast('Error logging in', 'danger');
-                    }
-                });
-                
-                // Logout button
-                document.getElementById('logoutBtn').addEventListener('click', function() {
-                    updateUIForLoggedOutUser();
-                    showToast('Logged out successfully', 'success');
-                });
-                
-                // Check on initial load
-                if (window.location.hash === '#dashboard') {
-                    if (!currentUser) {
-                        document.getElementById('dashboardLoginAlert').classList.remove('d-none');
-                        document.getElementById('dashboardContent').classList.add('d-none');
-                    } else {
-                        document.getElementById('dashboardLoginAlert').classList.add('d-none');
-                        document.getElementById('dashboardContent').classList.remove('d-none');
-                        updateDashboardCharts('daily');
-                    }
+            });
+            
+            // Calculate buttons event listeners
+            document.getElementById('calculateTransport').addEventListener('click', function() {
+                calculateImpact('transport');
+            });
+            
+            document.getElementById('calculateEnergy').addEventListener('click', function() {
+                calculateImpact('energy');
+            });
+            
+            document.getElementById('calculateFood').addEventListener('click', function() {
+                calculateImpact('food');
+            });
+            
+            document.getElementById('calculateShopping').addEventListener('click', function() {
+                calculateImpact('shopping');
+            });
+            
+            // Save footprint button
+            document.getElementById('saveFootprintBtn').addEventListener('click', function() {
+                if (!currentUser) {
+                    showToast('Please login to save your footprint', 'danger');
+                    return;
                 }
                 
-                if (window.location.hash === '#tracker') {
-                    if (!currentUser) {
-                        document.getElementById('trackerLoginAlert').classList.remove('d-none');
-                    } else {
-                        document.getElementById('trackerLoginAlert').classList.add('d-none');
-                    }
-                }
+                const transportImpact = parseFloat(document.getElementById('transportImpact').textContent) || 0;
+                const energyImpact = parseFloat(document.getElementById('energyImpact').textContent) || 0;
+                const foodImpact = parseFloat(document.getElementById('foodImpact').textContent) || 0;
+                const shoppingImpact = parseFloat(document.getElementById('shoppingImpact').textContent) || 0;
+                const totalImpact = transportImpact + energyImpact + foodImpact + shoppingImpact;
                 
-                if (window.location.hash === '#leaderboard') {
-                    if (!currentUser) {
-                        document.getElementById('leaderboardLoginAlert').classList.remove('d-none');
-                        document.getElementById('leaderboardContent').classList.add('d-none');
-                    } else {
-                        document.getElementById('leaderboardLoginAlert').classList.add('d-none');
-                        document.getElementById('leaderboardContent').classList.remove('d-none');
+                const success = saveFootprint(
+                    currentUser.id,
+                    transportImpact,
+                    energyImpact,
+                    foodImpact,
+                    shoppingImpact,
+                    totalImpact
+                );
+                
+                if (success) {
+                    showToast('Carbon footprint saved successfully!', 'success');
+                    
+                    // Update dashboard if visible
+                    if (window.location.hash === '#dashboard') {
+                        updateDashboard();
+                    }
+                    
+                    // Update leaderboard if visible
+                    if (window.location.hash === '#leaderboard') {
                         updateLeaderboard();
                     }
+                } else {
+                    showToast('Error saving footprint', 'danger');
                 }
             });
+            
+            // Sign up button
+            document.getElementById('signupButton').addEventListener('click', function() {
+                const fullName = document.getElementById('fullName').value;
+                const email = document.getElementById('email').value;
+                const password = document.getElementById('password').value;
+                const confirmPassword = document.getElementById('confirmPassword').value;
+                const termsCheck = document.getElementById('termsCheck').checked;
+                
+                if (!fullName || !email || !password || !confirmPassword) {
+                    showToast('Please fill in all fields', 'danger');
+                    return;
+                }
+                
+                if (password !== confirmPassword) {
+                    showToast('Passwords do not match', 'danger');
+                    return;
+                }
+                
+                if (!termsCheck) {
+                    showToast('Please agree to the Terms and Conditions', 'danger');
+                    return;
+                }
+                
+                // Check if user already exists
+                if (getUserByEmail(email)) {
+                    showToast('User with this email already exists', 'danger');
+                    return;
+                }
+                
+                // Create new user
+                const newUser = addUser(fullName, email, password);
+                
+                if (newUser) {
+                    currentUser = newUser;
+                    localStorage.setItem('carbonEveSession', JSON.stringify({ userId: newUser.id }));
+                    
+                    showToast('Account created successfully!', 'success');
+                    updateUIForLoggedInUser(newUser);
+                    
+                    // Close modal after delay
+                    setTimeout(() => {
+                        const modal = bootstrap.Modal.getInstance(document.getElementById('signupModal'));
+                        modal.hide();
+                    }, 1500);
+                } else {
+                    showToast('Error creating account', 'danger');
+                }
+            });
+            
+            // Login button
+            document.getElementById('loginButton').addEventListener('click', function() {
+                const email = document.getElementById('loginEmail').value;
+                const password = document.getElementById('loginPassword').value;
+                
+                if (!email || !password) {
+                    showToast('Please enter both email and password', 'danger');
+                    return;
+                }
+                
+                const user = getUserByEmail(email);
+                
+                if (!user || user.password !== password) {
+                    showToast('Invalid email or password', 'danger');
+                    return;
+                }
+                
+                currentUser = user;
+                localStorage.setItem('carbonEveSession', JSON.stringify({ userId: user.id }));
+                
+                showToast('Login successful!', 'success');
+                updateUIForLoggedInUser(user);
+                
+                // Close modal after delay
+                setTimeout(() => {
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('loginModal'));
+                    modal.hide();
+                }, 1500);
+            });
+            
+            // Logout button
+            document.getElementById('logoutBtn').addEventListener('click', function() {
+                updateUIForLoggedOutUser();
+                showToast('Logged out successfully', 'success');
+            });
+            
+            // Check on initial load
+            if (window.location.hash === '#dashboard') {
+                if (!currentUser) {
+                    document.getElementById('dashboardLoginAlert').classList.remove('d-none');
+                    document.getElementById('dashboardContent').classList.add('d-none');
+                } else {
+                    document.getElementById('dashboardLoginAlert').classList.add('d-none');
+                    document.getElementById('dashboardContent').classList.remove('d-none');
+                    updateDashboard();
+                }
+            }
+            
+            if (window.location.hash === '#tracker') {
+                if (!currentUser) {
+                    document.getElementById('trackerLoginAlert').classList.remove('d-none');
+                } else {
+                    document.getElementById('trackerLoginAlert').classList.add('d-none');
+                }
+            }
+            
+            if (window.location.hash === '#leaderboard') {
+                if (!currentUser) {
+                    document.getElementById('leaderboardLoginAlert').classList.remove('d-none');
+                    document.getElementById('leaderboardContent').classList.add('d-none');
+                } else {
+                    document.getElementById('leaderboardLoginAlert').classList.add('d-none');
+                    document.getElementById('leaderboardContent').classList.remove('d-none');
+                    updateLeaderboard();
+                }
+            }
         });
     </script>
 </body>
